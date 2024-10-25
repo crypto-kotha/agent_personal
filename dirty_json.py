@@ -209,29 +209,45 @@ class DirtyJson:
 
     def _parse_number(self):
         number_str = ""
-        sign = False  # Track if we have seen a sign
-
-        while self.current_char is not None and (self.current_char.isdigit() or self.current_char in ['-', '+', '.', 'e', 'E']):
-            if self.current_char in ['-', '+'] and not sign:  # Sign only allowed at the start
-                sign = True  # Set sign to true after first sign
-                number_str += self.current_char
-            elif self.current_char.isdigit() or self.current_char in ['.', 'e', 'E']:
-                number_str += self.current_charcd
-            else:
-                break  # If we hit an invalid character for a number, break out
-
+        # Handle negative/positive signs
+        if self.current_char in ['-', '+']:
+            number_str += self.current_char
             self._advance()
+        
+        # Parse integer part
+        while self.current_char is not None and self.current_char.isdigit():
+            number_str += self.current_char
+            self._advance()
+        
+        # Parse decimal part
+        if self.current_char == '.':
+            number_str += self.current_char
+            self._advance()
+            while self.current_char is not None and self.current_char.isdigit():
+                number_str += self.current_char
+                self._advance()
+        
+        # Parse exponential part
+        if self.current_char is not None and self.current_char.lower() == 'e':
+            number_str += self.current_char
+            self._advance()
+            if self.current_char in ['-', '+']:
+                number_str += self.current_char
+                self._advance()
+            while self.current_char is not None and self.current_char.isdigit():
+                number_str += self.current_char
+                self._advance()
 
-        # Now we ensure we have valid number before conversion
-        if number_str and (number_str[0] in ['-', '+'] or number_str[0].isdigit()):
-            try:
-                if '.' in number_str or 'e' in number_str.lower():
-                    return float(number_str)  # Handle floating point numbers
-                return int(number_str)  # Handle integers
-            except ValueError:
-                raise ValueError(f"Invalid number: {number_str}")  # Raise an informative error if conversion fails
+        # Handle empty or invalid number strings
+        if not number_str or number_str in ['-', '+']:
+            raise ValueError(f"Invalid number: {number_str}")
 
-        raise ValueError(f"Could not convert string to float: '{number_str}'")  # Raise an error if string is invalid
+        try:
+            if '.' in number_str or 'e' in number_str.lower():
+                return float(number_str)
+            return int(number_str)
+        except ValueError:
+            raise ValueError(f"Invalid number format: {number_str}")
 
 
     def _parse_true(self):
