@@ -1,3 +1,7 @@
+
+
+
+
 class DirtyJson:
     def __init__(self):
         self._reset()
@@ -209,45 +213,82 @@ class DirtyJson:
 
     def _parse_number(self):
         number_str = ""
+        start_index = self.index
+    
         # Handle negative/positive signs
         if self.current_char in ['-', '+']:
             number_str += self.current_char
             self._advance()
         
+            # Peek ahead to see if there are digits after the sign
+            if not self.current_char or not self.current_char.isdigit():
+                # Reset position to start of number
+                self.index = start_index
+                self.current_char = self.json_string[self.index] if self.index < len(self.json_string) else None
+                # Try parsing as unquoted string instead
+                return self._parse_unquoted_string()
+    
+        # Must have at least one digit for the integer part
+        if not self.current_char or not self.current_char.isdigit():
+            # Reset position to start of number
+            self.index = start_index
+            self.current_char = self.json_string[self.index] if self.index < len(self.json_string) else None
+            # Try parsing as unquoted string instead
+            return self._parse_unquoted_string()
+    
         # Parse integer part
-        while self.current_char is not None and self.current_char.isdigit():
+        while self.current_char and self.current_char.isdigit():
             number_str += self.current_char
             self._advance()
-        
+    
         # Parse decimal part
         if self.current_char == '.':
             number_str += self.current_char
             self._advance()
-            while self.current_char is not None and self.current_char.isdigit():
+        
+            # Must have at least one digit after decimal point
+            if not self.current_char or not self.current_char.isdigit():
+                # Reset position to start of number
+                self.index = start_index
+                self.current_char = self.json_string[self.index] if self.index < len(self.json_string) else None
+                # Try parsing as unquoted string instead
+                return self._parse_unquoted_string()
+            
+            while self.current_char and self.current_char.isdigit():
                 number_str += self.current_char
                 self._advance()
-        
+    
         # Parse exponential part
-        if self.current_char is not None and self.current_char.lower() == 'e':
+        if self.current_char and self.current_char.lower() == 'e':
             number_str += self.current_char
             self._advance()
+        
+            # Handle optional sign in exponent
             if self.current_char in ['-', '+']:
                 number_str += self.current_char
                 self._advance()
-            while self.current_char is not None and self.current_char.isdigit():
+        
+            # Must have at least one digit in exponent
+            if not self.current_char or not self.current_char.isdigit():
+                # Reset position to start of number
+                self.index = start_index
+                self.current_char = self.json_string[self.index] if self.index < len(self.json_string) else None
+                # Try parsing as unquoted string instead
+                return self._parse_unquoted_string()
+            
+            while self.current_char and self.current_char.isdigit():
                 number_str += self.current_char
                 self._advance()
-
-        # Handle empty or invalid number strings
-        if not number_str or number_str in ['-', '+']:
-            raise ValueError(f"Invalid number: {number_str}")
-
+    
         try:
             if '.' in number_str or 'e' in number_str.lower():
                 return float(number_str)
             return int(number_str)
         except ValueError:
-            raise ValueError(f"Invalid number format: {number_str}")
+            # If we can't parse it as a number, reset position and try as unquoted string
+            self.index = start_index
+            self.current_char = self.json_string[self.index] if self.index < len(self.json_string) else None
+            return self._parse_unquoted_string()
 
 
     def _parse_true(self):
