@@ -1,3 +1,4 @@
+
 import asyncio
 from dataclasses import dataclass
 import shlex
@@ -9,31 +10,37 @@ from python.helpers.shell_local import LocalInteractiveSession
 from python.helpers.shell_ssh import SSHInteractiveSession
 from python.helpers.docker import DockerContainerManager
 
-
 @dataclass
 class State:
     shell: LocalInteractiveSession | SSHInteractiveSession
     docker: DockerContainerManager | None
 
-
 class CodeExecution(Tool):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.state: Optional[State] = None
 
     async def execute(self, **kwargs):
-        await self.agent.handle_intervention()  # Wait for intervention and handle it, if paused
-        await self.prepare_state()
+        """Execute code with the specified runtime."""
+        # Ensure state is prepared before execution
+        if not hasattr(self, 'state'):
+            await self.prepare_state()
+            
+        await self.agent.handle_intervention()
 
-        # Ensure 'code' is present in arguments
-        if 'code' not in self.args:
+        if 'code' not in kwargs:
             raise ValueError("Missing required argument: 'code'")
 
-        runtime = self.args.get("runtime", "").lower().strip()
+        runtime = kwargs.get("runtime", "").lower().strip()
+        self.args = kwargs  # Store arguments for use in other methods
 
+        response = None
         if runtime == "python":
-            response = await self.execute_python_code(self.args["code"])
+            response = await self.execute_python_code(kwargs["code"])
         elif runtime == "nodejs":
-            response = await self.execute_nodejs_code(self.args["code"])
+            response = await self.execute_nodejs_code(kwargs["code"])
         elif runtime == "terminal":
-            response = await self.execute_terminal_command(self.args["code"])
+            response = await self.execute_terminal_command(kwargs["code"])
         elif runtime == "output":
             response = await self.get_terminal_output(wait_with_output=5, wait_without_output=60)
         elif runtime == "reset":
@@ -43,6 +50,7 @@ class CodeExecution(Tool):
 
         if not response:
             response = self.agent.read_prompt("fw.code_no_output.md")
+        
         return Response(message=response, break_loop=False)
 
     async def before_execution(self, **kwargs):
@@ -74,10 +82,13 @@ class CodeExecution(Tool):
         await self.agent.append_message(msg_response, human=True)
 
     async def prepare_state(self, reset=False):
-        self.state = self.agent.get_data("cot_state")
+        """Initialize or reset the execution state."""
+        if not hasattr(self, 'agent'):
+            raise AttributeError("CodeExecution instance has no 'agent' attribute. Ensure proper initialization.")
+            
         if not self.state or reset:
-
-            # initialize docker container if execution in docker is configured
+            # Initialize docker container if execution in docker is configured
+            docker = None
             if self.agent.config.code_exec_docker_enabled:
                 docker = DockerContainerManager(
                     logger=self.agent.context.log,
@@ -87,10 +98,8 @@ class CodeExecution(Tool):
                     volumes=self.agent.config.code_exec_docker_volumes,
                 )
                 docker.start_container()
-            else:
-                docker = None
 
-            # initialize local or remote interactive shell insterface
+            # Initialize shell interface
             if self.agent.config.code_exec_ssh_enabled:
                 shell = SSHInteractiveSession(
                     self.agent.context.log,
@@ -102,9 +111,8 @@ class CodeExecution(Tool):
             else:
                 shell = LocalInteractiveSession()
 
-            self.state = State(shell=shell, docker=docker)
             await shell.connect()
-        self.agent.set_data("cot_state", self.state)
+            self.state = State(shell=shell, docker=docker)
 
     async def execute_python_code(self, code: str, reset: bool = False):
         escaped_code = shlex.quote(code)
@@ -120,8 +128,9 @@ class CodeExecution(Tool):
         return await self.terminal_session(command, reset)
 
     async def terminal_session(self, command: str, reset: bool = False):
-
-        await self.agent.handle_intervention()  # wait for intervention and handle it, if paused
+        if not self.state:
+            await self.prepare_state()
+        #await self.agent.handle_intervention()  # wait for intervention and handle it, if paused
         if reset:
             await self.reset_terminal()
 
@@ -138,7 +147,11 @@ class CodeExecution(Tool):
         wait_with_output=3,
         wait_without_output=10,
         max_exec_time=60,
-    ):
+    )-> str:
+        
+        if not self.state:
+            await self.prepare_state()
+
         idle = 0
         SLEEP_TIME = 0.1
         start_time = time.time()
