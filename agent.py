@@ -121,6 +121,7 @@ class AgentConfig:
     prompts_subdir: str = ""
     memory_subdir: str = ""
     knowledge_subdirs: list[str] = field(default_factory=lambda: ["default", "custom"])
+    instruments_subdirs: list[str] = field(default_factory=lambda: ["default", "custom"])
     auto_memory_count: int = 3
     auto_memory_skip: int = 2
     rate_limit_seconds: int = 60
@@ -140,8 +141,8 @@ class AgentConfig:
     )
     code_exec_docker_volumes: dict[str, dict[str, str]] = field(
         default_factory=lambda: {
-            files.get_abs_path("work_dir"): {"bind": "/root", "mode": "rw"},
-            files.get_abs_path("instruments"): {"bind": "/instruments", "mode": "rw"},
+            files.get_abs_path("work_dir"): {"bind": "/root", "mode": "rwx"},
+            files.get_abs_path("instruments"): {"bind": "/instruments", "mode": "rwx"},
         }
     )
     code_exec_ssh_enabled: bool = True
