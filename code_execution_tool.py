@@ -320,8 +320,16 @@ class CodeExecution(Tool):
             )
 
     async def execute_python_code(self, code: str, reset: bool = False):
+        try:
+            await asyncio.create_subprocess_shell("command -v ipython")
+        except Exception:
+            # If not found, install it and inform the user
+            await self.execute_terminal_command("pip install ipython")
+            return "ipython not available. Installing ipython..."
+        
         if self.agent.config.code_exec_docker_enabled:
             code = self._adjust_paths_for_docker(code)
+            
         escaped_code = shlex.quote(code)
         command = f"ipython -c {escaped_code}"
         return await self.terminal_session(command, reset)
