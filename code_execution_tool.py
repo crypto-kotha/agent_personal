@@ -1,3 +1,5 @@
+# code_exe_tool
+import re
 import os
 import shlex
 import time
@@ -282,15 +284,15 @@ class CodeExecution(Tool):
             #working_dir = Path(work_dir)
             
             working_dir = self.work_dir
-            docker_working_dir = "/root/work_dir"
+            docker_working_dir = "work_dir"
             working_dir.mkdir(parents=True, exist_ok=True)
             os.chmod(working_dir, 0o777)
 
             docker = None
             if self.agent.config.code_exec_docker_enabled:
                 volumes = {
-                    str(working_dir): {"bind": docker_working_dir, "mode": "rwx"},
-                    files.get_abs_path("instruments"): {"bind": "/instruments", "mode": "rwx"},
+                    str(working_dir): {"bind": docker_working_dir, "mode": "rw"},
+                    files.get_abs_path("instruments"): {"bind": "/instruments", "mode": "rw"},
                 }
                 docker = DockerContainerManager(
                     logger=self.agent.context.log,
@@ -320,18 +322,55 @@ class CodeExecution(Tool):
             )
 
     async def execute_python_code(self, code: str, reset: bool = False):
-        try:
-            await asyncio.create_subprocess_shell("command -v ipython")
-        except Exception:
-            # If not found, install it and inform the user
-            await self.execute_terminal_command("pip install ipython")
-            return "ipython not available. Installing ipython..."
-        
+        """Execute Python code, handling package dependencies"""
+    
+        if not self.state:
+            await self.prepare_state()
+
+        # First, parse the code to detect imports
+        required_packages = set()
+        for line in code.split('\n'):
+            if line.startswith('import ') or line.startswith('from '):
+                # Extract package name (take first part of import)
+                package = line.split()[1].split('.')[0]
+                if package not in ['datetime', 'os', 'sys', 'time', 'json', 'random']:  # Standard library exclusions
+                    required_packages.add(package)
+
+        # Install required packages
+        if required_packages:
+            PrintStyle(font_color="#85C1E9").print(f"Installing required packages: {', '.join(required_packages)}")
+            for package in required_packages:
+                try:
+                    install_cmd = f"python3 -m pip install --user {package}"
+                    self.state.shell.send_command(install_cmd)
+                    install_result = await self.get_terminal_output(
+                        wait_with_output=30,
+                        wait_without_output=10
+                    )
+                
+                    # If user installation fails, try with system pip
+                    if "error" in install_result.lower() or "warning" in install_result.lower():
+                        PrintStyle(font_color="#FFA500").print(f"Attempting system-wide installation for {package}")
+                        # Use pip3 directly with --break-system-packages
+                        install_cmd = f"pip3 install --break-system-packages {package}"
+                        self.state.shell.send_command(install_cmd)
+                        install_result = await self.get_terminal_output(
+                            wait_with_output=30,
+                            wait_without_output=10
+                        )
+                
+                    if "Successfully installed" not in install_result:
+                        PrintStyle(font_color="#FF0000").print(f"Warning: Package {package} may not have installed correctly")
+                except Exception as e:
+                    PrintStyle(font_color="#FF0000").print(f"Failed to install {package}: {str(e)}")
+                    return f"Error: Required package {package} could not be installed"
+
+        # Execute the actual code
         if self.agent.config.code_exec_docker_enabled:
             code = self._adjust_paths_for_docker(code)
-            
+        
         escaped_code = shlex.quote(code)
-        command = f"ipython -c {escaped_code}"
+        command = f"python3 -c {escaped_code}"
         return await self.terminal_session(command, reset)
     
     def _adjust_paths_for_docker(self, code: str) -> str:
@@ -347,18 +386,64 @@ class CodeExecution(Tool):
         return await self.terminal_session(command, reset)
 
     async def execute_terminal_command(self, command: str, reset: bool = False):
-        return await self.terminal_session(command, reset)
-
-    async def terminal_session(self, command: str, reset: bool = False):
         if not self.state:
             await self.prepare_state()
         if reset:
             await self.reset_terminal()
-        self.state.shell.send_command(command)
+
+        # Split commands if they contain && or ;
+        commands = []
+        if "&&" in command:
+            commands = [cmd.strip() for cmd in command.split("&&")]
+        elif ";" in command:
+            commands = [cmd.strip() for cmd in command.split(";")]
+        else:
+            commands = [command]
+
+        # Handle for loops
+        processed_commands = []
+        for cmd in commands:
+            if cmd.startswith("for") and "in" in cmd:
+                try:
+                    # Extract the loop structure
+                    loop_parts = cmd.split(";")
+                    if len(loop_parts) >= 3:
+                        # Parse the for loop components
+                        declaration = loop_parts[0]  # e.g., "for file in $(find . -name '*.md')"
+                        command_to_execute = ";".join(loop_parts[1:])  # The command to execute in loop
+
+                        # Execute the command that generates the list (e.g., find command)
+                        list_command = declaration.split("in")[1].strip().strip("$()")
+                        self.state.shell.send_command(list_command)
+                        items = (await self.terminal_session(list_command, False)).strip().split("\n")
+
+                        # Generate individual commands for each item
+                        var_name = declaration.split()[1]  # e.g., "file"
+                        for item in items:
+                            if item:  # Skip empty lines
+                                expanded_command = command_to_execute.replace(var_name, item)
+                                processed_commands.append(expanded_command)
+                except Exception as e:
+                    # If for loop parsing fails, treat it as a regular command
+                    processed_commands.append(cmd)
+            else:
+                processed_commands.append(cmd)
+
+        # Execute all commands sequentially
+        last_output = None
         PrintStyle(background_color="white", font_color="#1B4F72", bold=True).print(
             f"{self.agent.agent_name} code execution output"
         )
-        return await self.get_terminal_output()
+
+        for cmd in processed_commands:
+            self.state.shell.send_command(cmd)
+            last_output = await self.terminal_session(cmd, False)
+
+            # If any command fails, break the execution
+            if "error" in last_output.lower() or "exception" in last_output.lower():
+                break
+
+        return last_output  # Return the output of the last command
 
     async def get_terminal_output(
         self,
